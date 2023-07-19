@@ -69,6 +69,7 @@ class Client:
             if conn is not None:
                 msg = self.put_command_factory(key, value)
                 response = self.send_request(conn, msg)
+                self.put_ok_command_handler(response)
                 print(response)
         finally:
             self.close_server_connection(conn)
@@ -107,10 +108,11 @@ class Client:
     # endregion
     
     # region command handlers
-    # handler responsavel por tratar confirmações de join
-    # def join_ok_command_handler(self, join_ok_cmd: Dict) -> None:
-    #     files, sender_address = join_ok_cmd['files'], join_ok_cmd['sender_address']
-    #     print(f'Sou peer {sender_address} com arquivos {", ".join(files)}')
+    # handler responsavel por tratar confirmações de put
+    def put_ok_command_handler(self, put_ok_cmd: Message) -> None:
+        key, value, timestamp = put_ok_cmd.key, put_ok_cmd.value, put_ok_cmd.timestamp
+        print(f'PUT_OK key: {key} value {value} timestamp {timestamp} realizada no servidor [IP:porta]')
+        
 
     # # handler responsavel por tratar resultados de buscas
     # def search_result_command_handler(self, search_result_cmd: Dict) -> None:
@@ -178,11 +180,14 @@ class Client:
                             raise Exception('GET espera pelo parâmetro `key`.\n')
 
                         self.client.get(key=args[0])
+                    elif main_cmd == 'EXIT':
+                        raise KeyboardInterrupt()
                     elif main_cmd == 'HELP':
                         print('Os comandos disponíveis são:\n')
                         print('INIT ip:porta [, ip:porta]*: Configura os endereços dos servidores.\n')
                         print('PUT key value: Envia o par <key,value> para o servidor.\n')
                         print('GET key: Solicita ao servidor pelo valor correspondente a chave `key`.\n')
+                        print('EXIT: Encerra a execução.\n')
                     else:
                         pass
 

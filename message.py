@@ -7,6 +7,7 @@ class Message:
         self._type  = type
         self._key   = ''
         self._value = ''
+        self._timestamp = -1
     
     @property
     def type(self) -> str:
@@ -20,12 +21,19 @@ class Message:
     def value(self) -> str:
         return self._value
 
+    @property
+    def timestamp(self) -> int:
+        return self._timestamp
+
     def set_key(self, key: str) -> None:
         self._key = key
         
     def set_value(self, value: str) -> None:
         self._value = value
     
+    def set_timestamp(self, timestamp: int) -> None:
+        self._timestamp = timestamp
+
     @staticmethod
     def to_json(msg) -> Dict:
         if isinstance(msg, Message):
@@ -41,6 +49,7 @@ class Message:
             inst = Message(d['_type'])
             inst.set_key(d['_key'])
             inst.set_value(d['_value'])
+            inst.set_timestamp(d['_timestamp'])
         else:
             inst = d
         return inst

@@ -18,7 +18,7 @@ class Server:
         self._server_socket.bind((self.ip, self.port))
         self._server_socket.listen(5)
         # # estrutura de dados para armazenamento dos usuarios registrados
-        self._files = dict()
+        self._store = dict()
         self._lock = Lock()
 
     #region getters
@@ -40,8 +40,11 @@ class Server:
     #endregion
 
     # region factories
-    def put_ok_command_factory(self) -> Dict:
+    def put_ok_command_factory(self, key:str, value: str, timestamp: int) -> Dict:
         put_ok_cmd = Message('PUT_OK')
+        put_ok_cmd.set_key(key)
+        put_ok_cmd.set_value(value)
+        put_ok_cmd.set_timestamp(timestamp)
         return put_ok_cmd
 
     # def search_result_command_factory(self, results: List[str]) -> Dict:
@@ -61,9 +64,11 @@ class Server:
         return ''
 
     def put_command_handler(self, put_cmd: Message) -> Dict:
-        print(put_cmd)
-        # print(f'Peer {sender_address} adicionado com arquivos {", ".join(files)}')
-        return self.put_ok_command_factory()
+        key, value, timestamp = put_cmd.key, put_cmd.value, put_cmd.timestamp
+        new_timestamp = self.store_key_value_pair(key, value, timestamp)
+
+        print(f'Cliente [IP]:[porta] PUT key:{key} value:{value}')
+        return self.put_ok_command_factory(key, value, new_timestamp)
 
     # def search_command_handler(self, search_cmd: Dict) -> Dict:
     #     file_name, sender = search_cmd['file_name'], search_cmd['sender']
@@ -94,26 +99,22 @@ class Server:
             except:
                 pass
 
-    # def get_file_providers(self, file_name) -> List[str]:
-    #     formatted_file_name = file_name.upper()
-    #     with self._lock:
-    #         file_providers = self._files.get(formatted_file_name)
-    #         if file_providers is None:
-    #             return []
+    def get_key_value_pair(self, key: str) -> Dict:
+        formatted_key = key.upper()
+        with self._lock:
+            return self._store.get(formatted_key)
 
-    #         format_providers = lambda d: [f'{ip}:{port}' for ip, ports in d.items() for port in ports.keys()]
-    #         return format_providers(file_providers)
-
-    # # registra um client provedor de arquivos em um dicionario tridimensional para otimizar a busca
-    # def set_file_provider(self, file_name: str, ip: str, port: int) -> None:
-    #     formatted_file_name = file_name.upper()
-    #     with self._lock:
-    #         if formatted_file_name not in self._files:
-    #             self._files[formatted_file_name] = dict()
-    #         if ip not in self._files[formatted_file_name]:
-    #             self._files[formatted_file_name][ip] = dict()
-            
-    #         self._files[formatted_file_name][ip][port] = 1
+    # registra um client provedor de arquivos em um dicionario tridimensional para otimizar a busca
+    def store_key_value_pair(self, key: str, value: str, timestamp: int) -> int:
+        formatted_key = key.upper()
+        with self._lock:
+            print(f'trying to insert {key}:{value} with timestamp: {timestamp}')
+            if formatted_key not in self._store:
+                self._store[formatted_key] = dict([('value', ''),('timestamp', -1)])
+            new_timestamp = self._store.get(formatted_key)['timestamp'] + 1
+            self._store[formatted_key]['value'] = value
+            self._store[formatted_key]['timestamp'] = new_timestamp
+            return new_timestamp
 
     # classe aninhada para fazermos o dispatch da requisição para outras threads
     class RequestHandlerThread(Thread):
@@ -150,7 +151,6 @@ class Server:
         # aciona o command handler para dar o tratamento adequado de acordo com o comando recebido
         def process_request(self, request: bytes) -> Dict:
             command = helpers.json_deserialize(request.decode())
-            print(command)
             #command['sender'] = {'ip': self.client_address[0], 'port': self.client_address[1]}
             return self.server.server_handle(command)
 
