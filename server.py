@@ -13,7 +13,7 @@ class Server:
         self._port = port
         self.ip_leader = ip_leader
         self.port_leader = port_leader
-        # # criação do socket de conexão e bind no ip:porta parametrizado
+        # criação do socket de conexão e bind no ip:porta parametrizado
         self._server_socket = socket(AF_INET, SOCK_STREAM)
         self._server_socket.bind((self.ip, self.port))
         self._server_socket.listen(5)
@@ -40,46 +40,38 @@ class Server:
     #endregion
 
     # region factories
-    def put_ok_command_factory(self, key:str, value: str, timestamp: int) -> Dict:
-        put_ok_cmd = Message('PUT_OK')
-        put_ok_cmd.set_key(key)
-        put_ok_cmd.set_value(value)
-        put_ok_cmd.set_timestamp(timestamp)
+    def put_ok_command_factory(self, key:str, value: str, server_timestamp: int) -> Message:
+        put_ok_cmd = Message('PUT_OK').set_key(key).set_value(value).set_server_timestamp(server_timestamp)
         return put_ok_cmd
 
-    # def search_result_command_factory(self, results: List[str]) -> Dict:
-    #     return { 'name': 'SEARCH_RESULT', 'results': results }
-    
-    # def update_ok_command_factory(self) -> Dict:
-    #     return { 'name': 'UPDATE_OK' }
+    def get_ok_command_factory(self, key:str, value: str, client_timestamp: int, server_timestamp: int) -> Message:
+        get_ok_cmd = Message('GET_OK').set_key(key).set_value(value)
+        get_ok_cmd.set_client_timestamp(client_timestamp).set_server_timestamp(server_timestamp)
+        return get_ok_cmd
     # endregion
 
     # region command handlers
-    def server_handle(self, command: Message) -> Dict:
+    def server_handle(self, command: Message) -> Message:
         cmd_name = command.type
         if cmd_name == 'PUT':
             return self.put_command_handler(command)
-        # if cmd_name == 'GET':
-        #     return self.search_command_handler(command)
-        return ''
+        if cmd_name == 'GET':
+            return self.get_command_handler(command)
+        return None
 
-    def put_command_handler(self, put_cmd: Message) -> Dict:
-        key, value, timestamp = put_cmd.key, put_cmd.value, put_cmd.timestamp
-        new_timestamp = self.store_key_value_pair(key, value, timestamp)
+    def put_command_handler(self, put_cmd: Message) -> Message:
+        key, value, client_timestamp, client_address = put_cmd.key, put_cmd.value, put_cmd.client_timestamp, put_cmd.sender_address
+        server_timestamp = self.store_key_value_pair(key, value, client_timestamp)
+        print(f'Cliente {client_address} PUT key:{key} value:{value}')
+        return self.put_ok_command_factory(key, value, server_timestamp)
 
-        print(f'Cliente [IP]:[porta] PUT key:{key} value:{value}')
-        return self.put_ok_command_factory(key, value, new_timestamp)
-
-    # def search_command_handler(self, search_cmd: Dict) -> Dict:
-    #     file_name, sender = search_cmd['file_name'], search_cmd['sender']
-    #     print(f'Peer {sender["ip"]}:{sender["port"]} está procurando pelo arquivo {file_name}')
-    #     search_result = self.get_file_providers(file_name)
-    #     return self.search_result_command_factory(search_result)
-
-    # def update_command_handler(self, update_cmd: Dict) -> Dict:
-    #     file_name, ip, port = update_cmd['file_name'], update_cmd['sender']['ip'], update_cmd['client_port']
-    #     self.set_file_provider(file_name, ip, port)
-    #     return self.update_ok_command_factory()
+    def get_command_handler(self, get_cmd: Message) -> Message:
+        key, client_timestamp, client_address = get_cmd.key, get_cmd.client_timestamp, get_cmd.sender_address
+        stored = self.get_key_value_pair(key)
+        value, server_timestamp = stored['value'], stored['timestamp']
+        # TODO tratar erro e incluir na mensagem "portanto devolvendo [value ou erro]"
+        print(f'Cliente {client_address} GET key:{key} ts:{client_timestamp}. Meu ts é {server_timestamp}, portanto devolvendo {value}')
+        return self.get_ok_command_factory(key, value, client_timestamp, server_timestamp)
     # endregion
 
     def close(self) -> None:
@@ -108,9 +100,9 @@ class Server:
     def store_key_value_pair(self, key: str, value: str, timestamp: int) -> int:
         formatted_key = key.upper()
         with self._lock:
-            print(f'trying to insert {key}:{value} with timestamp: {timestamp}')
+            # TODO validar inserção
             if formatted_key not in self._store:
-                self._store[formatted_key] = dict([('value', ''),('timestamp', -1)])
+                self._store[formatted_key] = dict([('value', ''),('timestamp', 0)])
             new_timestamp = self._store.get(formatted_key)['timestamp'] + 1
             self._store[formatted_key]['value'] = value
             self._store[formatted_key]['timestamp'] = new_timestamp
@@ -144,15 +136,23 @@ class Server:
             if self.server.is_leader:
                 response_cmd = self.process_request(request)
                 if response_cmd is not None:
-                    self.client_socket.sendall(helpers.json_serialize(response_cmd).encode())
+                    self.client_socket.sendall(self.prepare_response(response_cmd))
             # TODO: redirect request
             self.client_socket.close()
 
         # aciona o command handler para dar o tratamento adequado de acordo com o comando recebido
-        def process_request(self, request: bytes) -> Dict:
+        def process_request(self, request: bytes) -> Message:
             command = helpers.json_deserialize(request.decode())
-            #command['sender'] = {'ip': self.client_address[0], 'port': self.client_address[1]}
+            # incluo na mensagem os dados do remetente
+            command.set_sender(ip=self.client_address[0], port=self.client_address[1])
+            # chamo o service locator que encaminhará a mensagem para ser tratada pelo handler adequado
             return self.server.server_handle(command)
+        
+        # monta o fluxo de bytes que será encaminhado como response à request recebida
+        def prepare_response(self, response_cmd: Message) -> bytes:
+            # incluo na resposta os dados do remetente
+            response_cmd.set_sender(self.server.ip, self.server.port)
+            return helpers.json_serialize(response_cmd).encode()     
 
 def main():
     try:

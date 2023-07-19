@@ -70,7 +70,6 @@ class Client:
                 msg = self.put_command_factory(key, value)
                 response = self.send_request(conn, msg)
                 self.put_ok_command_handler(response)
-                print(response)
         finally:
             self.close_server_connection(conn)
 
@@ -79,58 +78,39 @@ class Client:
         conn = self.open_server_connection()
         try:
             if conn is not None:
-                print ('put')
+                msg = self.get_command_factory(key)
+                response = self.send_request(conn, msg)
+                self.get_response_command_handler(response)
         finally:
             self.close_server_connection(conn)
     # endregion
 
     # region factories
-    def put_command_factory(self, key:str, value: str) -> Dict:
-        cmd = Message('PUT')
-        cmd.set_key(key)
-        cmd.set_value(value)
+    def put_command_factory(self, key:str, value: str) -> Message:
+        cmd = Message('PUT').set_key(key).set_value(value)
         return cmd
 
-    # def search_command_factory(self, file_name: str) -> Dict:
-    #     return { 'name': 'SEARCH', 'file_name': file_name }
-    
-    # def download_command_factory(self, file_name: str) -> Dict:
-    #     return { 'name': 'DOWNLOAD', 'file_name': file_name }
-
-    # def download_ok_command_factory(self, file_name: str) -> Dict:
-    #     return { 'name': 'DOWNLOAD_OK', 'file_name': file_name }
-    
-    # def update_command_factory(self, file_name: str, client_port: int):
-    #     return { 'name': 'UPDATE', 'file_name': file_name, 'client_port': client_port }
-    
-    # def file_properties_command_factory(self, file_name: str, file_size: int):
-    #     return { 'name': 'FILE', 'name': file_name, 'size': file_size }
+    def get_command_factory(self, key: str) -> Message:
+        #TODO obter timestamp real da chave
+        cmd = Message('GET').set_key(key).set_client_timestamp(0)
+        return cmd
     # endregion
     
     # region command handlers
-    # handler responsavel por tratar confirmações de put
+    # handler responsavel por tratar confirmações de um PUT
     def put_ok_command_handler(self, put_ok_cmd: Message) -> None:
-        key, value, timestamp = put_ok_cmd.key, put_ok_cmd.value, put_ok_cmd.timestamp
-        print(f'PUT_OK key: {key} value {value} timestamp {timestamp} realizada no servidor [IP:porta]')
+        key, value, timestamp, server_address = put_ok_cmd.key, put_ok_cmd.value, put_ok_cmd.server_timestamp, put_ok_cmd.sender_address
+        print(f'PUT_OK key: {key} value {value} timestamp {timestamp} realizada no servidor {server_address}')
         
 
-    # # handler responsavel por tratar resultados de buscas
-    # def search_result_command_handler(self, search_result_cmd: Dict) -> None:
-    #     results = search_result_cmd['results']
-    #     print(f'peers com arquivo solicitado: {", ".join(results)}')
+    # handler responsavel por tratar resultados de um GET
+    def get_response_command_handler(self, get_response_cmd: Message) -> None:
+        response_type = get_response_cmd.type
+        if response_type == 'GET_OK':
+            key, value, client_timestamp = get_response_cmd.key, get_response_cmd.value, get_response_cmd.client_timestamp
+            server_timestamp, server_address = get_response_cmd.server_timestamp, get_response_cmd.sender_address
+            print(f'GET key: {key} value: {value} obtido do servidor {server_address}, meu timestamp {client_timestamp} e do servidor {server_timestamp}')
 
-    # # handler responsavel por tratar solicitações de download
-    # def download_command_handler(self, download_cmd: Dict) -> str:
-    #     return download_cmd['file_name']
-    
-    # # handler responsavel por tratar confirmações de download
-    # def download_ok_command_hander(self, download_ok: Dict) -> None:
-    #     print('Arquivo [só nome do arquivo] baixado com sucesso na pasta [nome da pasta]')
-
-    # # handler responsavel por tratar confirmações de update
-    # def update_ok_command_handler(self, update_ok_cmd: Dict) -> None:
-    #     print('Registro atualizado com sucesso')
-        
     # endregion
     
     def run_iteractive_menu(self) -> None:
@@ -163,22 +143,18 @@ class Client:
                     if main_cmd == 'INIT':
                         if len(args) < 1:
                             raise Exception('INIT espera por pelo menos um parâmetro `ip:porta`.\n')
-                        
                         for address in args:
                             if not re.match('^(?:(?:\d{1,3}\.){3}\d{1,3}|localhost):\d{1,5}$', address):
                                 raise Exception(f'{address} não é um endereço válido.\n')
-
                         self.client.init(addresses=args)
                     elif main_cmd == 'PUT':
                         if len(args) != 2:
                             raise Exception('PUT espera pelos parâmetros `key` e `value`.\n')
-                        
                         key, value = args[0], args[1]
                         self.client.put(key, value)
                     elif main_cmd == 'GET':
                         if len(args) != 1:
                             raise Exception('GET espera pelo parâmetro `key`.\n')
-
                         self.client.get(key=args[0])
                     elif main_cmd == 'EXIT':
                         raise KeyboardInterrupt()
@@ -190,7 +166,6 @@ class Client:
                         print('EXIT: Encerra a execução.\n')
                     else:
                         pass
-
                 except (KeyboardInterrupt, EOFError):
                     print('\nSaindo...')
                     break
