@@ -42,6 +42,10 @@ class Server:
     @property
     def store(self) -> Dict:
         return self._store
+    
+    @property
+    def followers(self) -> List:
+        return self._followers
     #endregion
 
     # region setters
@@ -82,6 +86,13 @@ class Server:
     def follow_ok_command_factory(self) -> Message:
         follow_ok_cmd = Message('FOLLOW_OK').set_store_json(helpers.json_serialize(self.store))
         return follow_ok_cmd
+    
+    def replication_commmand_factory(self, key:str, value: str, leader_timestamp: int) -> Message:
+        replication_cmd = Message('REPLICATION').set_key(key).set_value(value).set_server_timestamp(leader_timestamp)
+        return replication_cmd
+    
+    def replication_ok_command_factory(self) -> Message:
+        return Message('REPLICATION_OK')
     # endregion
 
     # region command handlers
@@ -95,17 +106,25 @@ class Server:
             return self.follow_command_handler(command)
         if cmd_name == 'FOLLOW_OK':
             return self.follow_ok_command_handler(command)
+        if cmd_name == 'REPLICATION':
+            return self.replication_command_handler(command)
         return None
 
     # inclui/atualiza o valor de uma chave
     def put_command_handler(self, put_cmd: Message) -> Message:
+        key, value = put_cmd.key, put_cmd.value
         if self.is_leader:
-            key, value, client_timestamp, client_address = put_cmd.key, put_cmd.value, put_cmd.client_timestamp, put_cmd.sender_address
+            client_timestamp, client_address = put_cmd.client_timestamp, put_cmd.sender_address
             server_timestamp = self.store_key_value_pair(key, value, client_timestamp)
             print(f'Cliente {client_address} PUT key:{key} value:{value}')
-            # TODO: enviar para replicação e aguardar replication_ok
+            for (ip, port) in self.followers:
+                replication_cmd = self.replication_commmand_factory(key, value, server_timestamp)
+                self.replicate(replication_cmd, ip, port)
+            
+            print(f'Enviando PUT_OK ao Cliente {client_address} da key:{key} ts:{server_timestamp}.')
             return self.put_ok_command_factory(key, value, server_timestamp)
         
+        print(f'Encaminhando PUT key:{key} value:{value}')
         return self.send_put_to_leader(put_cmd)
 
     # devolve o conteudo de uma chave
@@ -128,6 +147,12 @@ class Server:
         store = helpers.json_deserialize(follow_ok_cmd.store_json)
         self.set_store(store)
 
+    # replica uma chave
+    def replication_command_handler(self, replication_cmd: Message) -> Message:
+        key, value, timestamp = replication_cmd.key, replication_cmd.value, replication_cmd.server_timestamp
+        self.store_key_value_pair(key, value, timestamp)
+        print(f'REPLICATION key:{key} value:{value} ts:{timestamp}')
+        return self.replication_ok_command_factory()
     # endregion
 
     def close(self) -> None:
@@ -146,6 +171,15 @@ class Server:
         try:
             if conn is not None:
                 return helpers.send_request(conn, put_cmd)
+        finally:
+            self.close_server_connection(conn)
+
+    def replicate(self, replication_cmd: Message, ip: str, port: int) -> None:
+        conn = self.open_follower_conection(ip, port)
+        try:
+            if conn is not None:
+                if helpers.send_request(conn, replication_cmd) is None:
+                    raise Exception('Erro ao replicar.')
         finally:
             self.close_server_connection(conn)
 
@@ -226,8 +260,9 @@ class Server:
         # aciona o command handler para dar o tratamento adequado de acordo com o comando recebido
         def process_request(self, request: bytes) -> Message:
             command = helpers.msg_deserialize(request.decode())
-            # incluo na mensagem os dados do remetente
-            command.set_sender(ip=self.client_address[0], port=self.client_address[1])
+            # incluo os dados do remetente na mensagem
+            if command is not None:
+                command.set_sender(ip=self.client_address[0], port=self.client_address[1])
             # chamo o service locator que encaminhará a mensagem para ser tratada pelo handler adequado
             return self.server.server_handle(command)
         
