@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Tuple
 from dataclasses import dataclass
 
 @dataclass
@@ -10,6 +10,8 @@ class Message:
         self._client_timestamp = 0
         self._server_timestamp = 0
         self._sender = ('', 0)
+        self._follower = ('', 0)
+        self._store_json = ''
     # region getters
     @property
     def type(self) -> str:
@@ -35,6 +37,14 @@ class Message:
     def sender_address(self) -> str:
         ip, port = self._sender
         return f'{ip}:{port}'
+    
+    @property
+    def follower_address(self) -> Tuple[str, int]:
+        return self._follower
+    
+    @property
+    def store_json(self) -> Dict:
+        return self._store_json
     # endregion
 
     # region setters
@@ -57,6 +67,14 @@ class Message:
     def set_sender(self, ip: str, port: int):
         self._sender = (ip, port)
         return self
+
+    def set_follower_address(self, ip: str, port: int):
+        self._follower = (ip, port)
+        return self
+
+    def set_store_json(self, store_json: str):
+        self._store_json = store_json
+        return self
     # endregion
 
     # region métodos estáticos para serialização/deserialização
@@ -77,7 +95,8 @@ class Message:
             msg = Message(d['_type'])
             msg.set_key(d['_key']).set_value(d['_value'])
             msg.set_client_timestamp(d['_client_timestamp']).set_server_timestamp(d['_server_timestamp'])
-            msg.set_sender(d['_sender'][0],d['_sender'][1])
+            msg.set_sender(d['_sender'][0],d['_sender'][1]).set_follower_address(d['_follower'][0],d['_follower'][1])
+            msg.set_store_json(d['_store_json'])
         else:
             msg = d
         return msg

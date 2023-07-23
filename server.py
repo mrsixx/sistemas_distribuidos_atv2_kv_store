@@ -17,10 +17,11 @@ class Server:
         self._server_socket = socket(AF_INET, SOCK_STREAM)
         self._server_socket.bind((self.ip, self.port))
         self._server_socket.listen(5)
-        # # estrutura de dados para armazenamento dos usuarios registrados
+        # estrutura de dados para armazenamento dos usuarios registrados
         self._store = dict()
         self._lock = Lock()
-
+        # lista que registra os followers
+        self._followers = []
     #region getters
     @property
     def ip(self) -> str:
@@ -37,7 +38,32 @@ class Server:
     @property
     def is_leader(self) -> bool:
         return self.ip == self.ip_leader and self.port == self.port_leader
+    
+    @property
+    def store(self) -> Dict:
+        return self._store
     #endregion
+
+    # region setters
+    def add_follower(self, ip: str, port: int) -> None:
+        self._followers.append((ip, port))
+    
+    def set_store(self, store: Dict) -> None:
+        self._store = store
+    # endregion
+
+    # abre conexão com um servidor follower para fins de replicação
+    def open_follower_conection(self, ip: str, port: int) -> socket:
+        return helpers.open_server_connection(ip, port)
+
+    # abre conexão com o servidor líder para encaminhar a requisição
+    def open_leader_connection(self) -> socket:
+        return helpers.open_server_connection(self.ip_leader, self.port_leader)
+
+    # fecha a conexão com o servidor líder
+    def close_server_connection(self, socket: socket) -> None:
+        helpers.close_server_connection(socket)
+
 
     # region factories
     def put_ok_command_factory(self, key:str, value: str, server_timestamp: int) -> Message:
@@ -48,6 +74,14 @@ class Server:
         get_ok_cmd = Message('GET_OK').set_key(key).set_value(value)
         get_ok_cmd.set_client_timestamp(client_timestamp).set_server_timestamp(server_timestamp)
         return get_ok_cmd
+    
+    def follow_command_factory(self, ip: str, port: int) -> Message:
+        follow_cmd = Message('FOLLOW').set_follower_address(ip, port)
+        return follow_cmd
+
+    def follow_ok_command_factory(self) -> Message:
+        follow_ok_cmd = Message('FOLLOW_OK').set_store_json(helpers.json_serialize(self.store))
+        return follow_ok_cmd
     # endregion
 
     # region command handlers
@@ -57,14 +91,24 @@ class Server:
             return self.put_command_handler(command)
         if cmd_name == 'GET':
             return self.get_command_handler(command)
+        if cmd_name == 'FOLLOW':
+            return self.follow_command_handler(command)
+        if cmd_name == 'FOLLOW_OK':
+            return self.follow_ok_command_handler(command)
         return None
 
+    # inclui/atualiza o valor de uma chave
     def put_command_handler(self, put_cmd: Message) -> Message:
-        key, value, client_timestamp, client_address = put_cmd.key, put_cmd.value, put_cmd.client_timestamp, put_cmd.sender_address
-        server_timestamp = self.store_key_value_pair(key, value, client_timestamp)
-        print(f'Cliente {client_address} PUT key:{key} value:{value}')
-        return self.put_ok_command_factory(key, value, server_timestamp)
+        if self.is_leader:
+            key, value, client_timestamp, client_address = put_cmd.key, put_cmd.value, put_cmd.client_timestamp, put_cmd.sender_address
+            server_timestamp = self.store_key_value_pair(key, value, client_timestamp)
+            print(f'Cliente {client_address} PUT key:{key} value:{value}')
+            # TODO: enviar para replicação e aguardar replication_ok
+            return self.put_ok_command_factory(key, value, server_timestamp)
+        
+        return self.send_put_to_leader(put_cmd)
 
+    # devolve o conteudo de uma chave
     def get_command_handler(self, get_cmd: Message) -> Message:
         key, client_timestamp, client_address = get_cmd.key, get_cmd.client_timestamp, get_cmd.sender_address
         stored = self.get_key_value_pair(key)
@@ -72,10 +116,38 @@ class Server:
         # TODO tratar erro e incluir na mensagem "portanto devolvendo [value ou erro]"
         print(f'Cliente {client_address} GET key:{key} ts:{client_timestamp}. Meu ts é {server_timestamp}, portanto devolvendo {value}')
         return self.get_ok_command_factory(key, value, client_timestamp, server_timestamp)
+    
+    # inclui um servidor follower na lista
+    def follow_command_handler(self, follow_cmd) -> None:
+        ip, port = follow_cmd.follower_address
+        self.add_follower(ip, port)
+        return self.follow_ok_command_factory()
+
+    # prepara a store do servidor que entrou na rede
+    def follow_ok_command_handler(self, follow_ok_cmd: Message) -> None:
+        store = helpers.json_deserialize(follow_ok_cmd.store_json)
+        self.set_store(store)
+
     # endregion
 
     def close(self) -> None:
         self.server_socket.close()
+
+    def init(self) -> None:
+        
+        if not self.is_leader:
+            self.follow_leader()
+        else:
+            self.store_key_value_pair('ola', 'mundo', 1)
+    
+    def send_put_to_leader(self, put_cmd: Message) -> Message:
+        # abre-se uma conexão com o servidor
+        conn = self.open_leader_connection()
+        try:
+            if conn is not None:
+                return helpers.send_request(conn, put_cmd)
+        finally:
+            self.close_server_connection(conn)
 
     def listen(self) -> None:
         while True:
@@ -89,14 +161,27 @@ class Server:
                 print('\nSaindo...')
                 break
             except:
-                pass
-
+                break
+                    
+    # envia uma notificação para o líder avisando que se juntou a rede e recebe como resposta os dados que o servidor possui
+    def follow_leader(self) -> None:
+         # abre-se uma conexão com o servidor
+        conn = self.open_leader_connection()
+        try:
+            if conn is not None:
+                msg = self.follow_command_factory(self.ip, self.port)
+                response = helpers.send_request(conn, msg)
+                self.follow_ok_command_handler(response)
+        finally:
+            self.close_server_connection(conn)
+    
+    # obtem um par <chave, valor> a partir da chave
     def get_key_value_pair(self, key: str) -> Dict:
         formatted_key = key.upper()
         with self._lock:
             return self._store.get(formatted_key)
 
-    # registra um client provedor de arquivos em um dicionario tridimensional para otimizar a busca
+    # registra um par <chave, valor>
     def store_key_value_pair(self, key: str, value: str, timestamp: int) -> int:
         formatted_key = key.upper()
         with self._lock:
@@ -133,16 +218,14 @@ class Server:
         # sobrescrevendo a função run
         def run(self):
             request = helpers.socket_receive_all(self.client_socket)
-            if self.server.is_leader:
-                response_cmd = self.process_request(request)
-                if response_cmd is not None:
-                    self.client_socket.sendall(self.prepare_response(response_cmd))
-            # TODO: redirect request
+            response_cmd = self.process_request(request)
+            if response_cmd is not None:
+                self.client_socket.sendall(self.prepare_response(response_cmd))
             self.client_socket.close()
 
         # aciona o command handler para dar o tratamento adequado de acordo com o comando recebido
         def process_request(self, request: bytes) -> Message:
-            command = helpers.json_deserialize(request.decode())
+            command = helpers.msg_deserialize(request.decode())
             # incluo na mensagem os dados do remetente
             command.set_sender(ip=self.client_address[0], port=self.client_address[1])
             # chamo o service locator que encaminhará a mensagem para ser tratada pelo handler adequado
@@ -152,16 +235,17 @@ class Server:
         def prepare_response(self, response_cmd: Message) -> bytes:
             # incluo na resposta os dados do remetente
             response_cmd.set_sender(self.server.ip, self.server.port)
-            return helpers.json_serialize(response_cmd).encode()     
+            return helpers.msg_serialize(response_cmd).encode()     
 
 def main():
     try:
-        ip = input('IP (default 127.0.0.1): ') or '127.0.0.1'
-        port = int(input('Port (default 1099): ') or '1099')
-        ip_leader = input('IP líder (default 127.0.0.1): ') or '127.0.0.1'
-        port_leader = int(input('Port líder (default 1099): ') or '1099')
+        ip = input('IP: ') or '127.0.0.1'
+        port = int(input('Port: '))
+        ip_leader = input('Leader IP: ') or '127.0.0.1'
+        port_leader = int(input('Leader Port: '))
         server = Server(ip, port, ip_leader, port_leader)
         try:
+            server.init()
             server.listen()
         finally:
             server.close()

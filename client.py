@@ -32,29 +32,12 @@ class Client:
         return self.servers_adresses[idx]
 
     # region funções de comunicação com o servidor
-    # envia um comando sem esperar pela resposta
-    def send_and_forget(self, socket: socket, message: Message) -> None:
-        cmd_str = helpers.json_serialize(message)
-        socket.sendall(cmd_str.encode())
-
-    # envia um comando e aguarda a resposta
-    def send_request(self, socket: socket, message: Message) -> Message:
-        self.send_and_forget(socket, message)
-        response = helpers.socket_receive_all(socket)
-        return helpers.json_deserialize(response)
-
     def open_server_connection(self) -> socket:
-        try:
-            ip, port = self.get_random_server_address()
-            sk = socket(AF_INET, SOCK_STREAM)
-            sk.connect((ip, port))
-            return sk
-        except ConnectionRefusedError:
-            print('Servidor não aceitou a conexão')
+        ip, port = self.get_random_server_address()
+        return helpers.open_server_connection(ip, port)
 
     def close_server_connection(self, socket: socket) -> None:
-        if socket is not None:
-            socket.close()
+        helpers.close_server_connection(socket)
     # endregion
 
     # region features
@@ -63,12 +46,12 @@ class Client:
             self.set_server_address(address)
         
     def put(self, key: str, value: str) -> None:
-         # abre-se uma conexão com o servidor
+        # abre-se uma conexão com o servidor
         conn = self.open_server_connection()
         try:
             if conn is not None:
                 msg = self.put_command_factory(key, value)
-                response = self.send_request(conn, msg)
+                response = helpers.send_request(conn, msg)
                 self.put_ok_command_handler(response)
         finally:
             self.close_server_connection(conn)
@@ -79,7 +62,7 @@ class Client:
         try:
             if conn is not None:
                 msg = self.get_command_factory(key)
-                response = self.send_request(conn, msg)
+                response = helpers.send_request(conn, msg)
                 self.get_response_command_handler(response)
         finally:
             self.close_server_connection(conn)
