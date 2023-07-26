@@ -31,8 +31,7 @@ Este projeto está sob a licença MIT. Para mais informações, consulte o arqui
 
 ## 💻 Links Úteis
 
-- [Demonstração do Projeto](link_da_demo)
-- [Repositório do Código Fonte](link_do_repositorio)
+- [Demonstração do Projeto](https://youtu.be/X1aSBdsZOzQ)
 
 
 
