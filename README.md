@@ -4,7 +4,7 @@
 
 Bem-vindo ao projeto KV Store. Esse é um trabalho desenvolvido para a disciplina de sistemas distribuídos do curso de Ciência da Computação na UFABC. Aqui, foi desenvolvido um sistema de armazenamento de pares chave-valor com o objetivo de garantir a consistência dessas informações através de replicação.
 
-### Demonstração (clique para ver o vídeo) 📽️
+### 📽️ Demonstração (clique para ver o vídeo) 
 
 [![Veja o vídeo de demonstração](https://img.youtube.com/vi/X1aSBdsZOzQ/maxresdefault.jpg)](https://youtu.be/X1aSBdsZOzQ)
 
