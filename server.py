@@ -13,15 +13,17 @@ class Server:
         self._port = port
         self.ip_leader = ip_leader
         self.port_leader = port_leader
-        # criação do socket de conexão e bind no ip:porta parametrizado
+        # criação do server socket e bind no ip:porta parametrizado
         self._server_socket = socket(AF_INET, SOCK_STREAM)
         self._server_socket.bind((self.ip, self.port))
         self._server_socket.listen(5)
-        # estrutura de dados para armazenamento dos usuarios registrados
+        # estrutura de dados para armazenamento dos pares chave-valor registrados
         self._store = dict()
+        # lock para gerenciar alterações concorrentes
         self._lock = Lock()
         # lista que registra os followers
         self._followers = []
+
     #region getters
     @property
     def ip(self) -> str:
@@ -60,37 +62,46 @@ class Server:
     def open_follower_conection(self, ip: str, port: int) -> socket:
         return helpers.open_server_connection(ip, port)
 
-    # abre conexão com o servidor líder para encaminhar a requisição
+    # abre conexão com o servidor líder para encaminhar uma requisição PUT
     def open_leader_connection(self) -> socket:
         return helpers.open_server_connection(self.ip_leader, self.port_leader)
 
-    # fecha a conexão com o servidor líder
+    # fecha a conexão com um servidor
     def close_server_connection(self, socket: socket) -> None:
         helpers.close_server_connection(socket)
 
-
     # region factories
+    # Monta um PUT_OK command, carregando a chave, valor e o timestamp incrementado pelo servidor
     def put_ok_command_factory(self, key:str, value: str, server_timestamp: int) -> Message:
         put_ok_cmd = Message('PUT_OK').set_key(key).set_value(value).set_server_timestamp(server_timestamp)
         return put_ok_cmd
 
+    # Monta um GET_OK Command, carregando chave, valor e os timestamps do cliente e o do servidor
     def get_ok_command_factory(self, key:str, value: str, client_timestamp: int, server_timestamp: int) -> Message:
         get_ok_cmd = Message('GET_OK').set_key(key).set_value(value)
         get_ok_cmd.set_client_timestamp(client_timestamp).set_server_timestamp(server_timestamp)
         return get_ok_cmd
     
+    # Monta um erro TRY_OTHER_SERVER_OR_LATER carregando a chave responsável pelo erro
+    def try_another_command_factory(self, key:str) -> Message:
+        return Message('TRY_OTHER_SERVER_OR_LATER').set_key(key)
+
+    # Monta um FOLLOW command carregando o endereço do servidor que deseja se juntar a rede
     def follow_command_factory(self, ip: str, port: int) -> Message:
         follow_cmd = Message('FOLLOW').set_follower_address(ip, port)
         return follow_cmd
 
+    # Monta um FOLLOW_OK command, carregando uma cópia do estado atual do servidor líder para manter a consistência
     def follow_ok_command_factory(self) -> Message:
         follow_ok_cmd = Message('FOLLOW_OK').set_store_json(helpers.json_serialize(self.store))
         return follow_ok_cmd
     
+    # Monta um REPLICATION command, carregando chave, valor e o timestamp incrementado pelo líder
     def replication_commmand_factory(self, key:str, value: str, leader_timestamp: int) -> Message:
         replication_cmd = Message('REPLICATION').set_key(key).set_value(value).set_server_timestamp(leader_timestamp)
         return replication_cmd
     
+    # Monta um REPLICATION_OK command, para informar o servidor do sucesso da replicação
     def replication_ok_command_factory(self) -> Message:
         return Message('REPLICATION_OK')
     # endregion
@@ -132,7 +143,12 @@ class Server:
         key, client_timestamp, client_address = get_cmd.key, get_cmd.client_timestamp, get_cmd.sender_address
         stored = self.get_key_value_pair(key)
         value, server_timestamp = stored['value'], stored['timestamp']
-        # TODO tratar erro e incluir na mensagem "portanto devolvendo [value ou erro]"
+
+        if client_timestamp > server_timestamp:
+            print(f'Cliente {client_address} GET key:{key} ts:{client_timestamp}. Meu ts é {server_timestamp}, portanto devolvendo TRY_OTHER_SERVER_OR_LATER')
+            return self.try_another_command_factory(key)
+            
+        value = 'NULL' if value is None else value
         print(f'Cliente {client_address} GET key:{key} ts:{client_timestamp}. Meu ts é {server_timestamp}, portanto devolvendo {value}')
         return self.get_ok_command_factory(key, value, client_timestamp, server_timestamp)
     
@@ -155,16 +171,16 @@ class Server:
         return self.replication_ok_command_factory()
     # endregion
 
+    # fecha uma conexão
     def close(self) -> None:
         self.server_socket.close()
 
-    def init(self) -> None:
-        
+    # Realiza o setup inicial do servidor, seguindo o líder caso seja um follower
+    def setup(self) -> None:    
         if not self.is_leader:
             self.follow_leader()
-        else:
-            self.store_key_value_pair('ola', 'mundo', 1)
     
+    # repassa um PUT command recebido para o líder e retransmite ao cliente solicitante a resposta
     def send_put_to_leader(self, put_cmd: Message) -> Message:
         # abre-se uma conexão com o servidor
         conn = self.open_leader_connection()
@@ -174,6 +190,7 @@ class Server:
         finally:
             self.close_server_connection(conn)
 
+    # Envia o replication_cmd para um servidor endereçado em ip:port
     def replicate(self, replication_cmd: Message, ip: str, port: int) -> None:
         conn = self.open_follower_conection(ip, port)
         try:
@@ -182,7 +199,8 @@ class Server:
                     raise Exception('Erro ao replicar.')
         finally:
             self.close_server_connection(conn)
-
+    
+    # recebe uma requisição e dispacha para uma thread dedicada ao tratamento
     def listen(self) -> None:
         while True:
             try:
@@ -213,15 +231,18 @@ class Server:
     def get_key_value_pair(self, key: str) -> Dict:
         formatted_key = key.upper()
         with self._lock:
-            return self._store.get(formatted_key)
+            value = self._store.get(formatted_key)
+            if value is not None:
+                return value
+            return dict([('value', 'NULL'),('timestamp', 0)])
+            
 
     # registra um par <chave, valor>
     def store_key_value_pair(self, key: str, value: str, timestamp: int) -> int:
         formatted_key = key.upper()
         with self._lock:
-            # TODO validar inserção
             if formatted_key not in self._store:
-                self._store[formatted_key] = dict([('value', ''),('timestamp', 0)])
+                self._store[formatted_key] = dict([('value', 'NULL'),('timestamp', 0)])
             new_timestamp = self._store.get(formatted_key)['timestamp'] + 1
             self._store[formatted_key]['value'] = value
             self._store[formatted_key]['timestamp'] = new_timestamp
@@ -280,7 +301,7 @@ def main():
         port_leader = int(input('Leader Port: '))
         server = Server(ip, port, ip_leader, port_leader)
         try:
-            server.init()
+            server.setup()
             server.listen()
         finally:
             server.close()

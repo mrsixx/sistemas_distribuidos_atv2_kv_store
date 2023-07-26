@@ -3,20 +3,30 @@ import re
 import helpers
 from random import randint
 from message import Message
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 from threading import Thread
 from dataclasses import dataclass
-from socket import socket, AF_INET, SOCK_STREAM
+from socket import socket
 
 @dataclass
 class Client:
     def __init__(self) -> None:
         self._servers_adresses  = []
+        self._timestamps = dict()
    
     # region getters
     @property
     def servers_adresses(self) -> List[Tuple[str, int]]:
         return self._servers_adresses
+
+    def get_timestamp(self, key: str) -> int:
+        timestamp = self._timestamps.get(key)
+        return timestamp if timestamp is not None else 0
+    # endregion
+
+    # region setters
+    def set_timestamp(self, key: str, timestamp: int) -> None:
+        self._timestamps[key] = timestamp
     # endregion
 
     # inclui um server socket na lista de sockets disponíveis
@@ -24,6 +34,7 @@ class Client:
         ip, port = server_address.split(':')
         self.servers_adresses.append((ip, int(port)))
     
+    # sorteia o endereço de um dos servidores aleatóriamente
     def get_random_server_address(self) -> Tuple[str, int]:
         if not any(self.servers_adresses):
             raise Exception('Nenhum endereço de servidor disponível')
@@ -41,10 +52,12 @@ class Client:
     # endregion
 
     # region features
+    # Recebe uma lista de endereços de servidores e armazena nas estruturas de dados do cliente
     def init(self, addresses: List[str]) -> None:
         for address in addresses:
             self.set_server_address(address)
-        
+    
+    # Recebe uma key e um value, envia a um servidor aleatoriamente e aguarda pela resposta
     def put(self, key: str, value: str) -> None:
         # abre-se uma conexão com o servidor
         conn = self.open_server_connection()
@@ -56,6 +69,7 @@ class Client:
         finally:
             self.close_server_connection(conn)
 
+    # recebe uma key e solicita pelo value para um servidor aleatório
     def get(self, key: str) -> None:
          # abre-se uma conexão com o servidor
         conn = self.open_server_connection()
@@ -69,20 +83,28 @@ class Client:
     # endregion
 
     # region factories
+    # monta um PUT command, carregando uma key e um value
     def put_command_factory(self, key:str, value: str) -> Message:
         cmd = Message('PUT').set_key(key).set_value(value)
         return cmd
 
+    # monta um GET command, carregando uma key e o timestamp conhecido pelo client
     def get_command_factory(self, key: str) -> Message:
-        #TODO obter timestamp real da chave
-        cmd = Message('GET').set_key(key).set_client_timestamp(0)
+        my_timestamp = self.get_timestamp(key)
+
+        # Cada timestamp é iniciado em zero, exceto o da chave teste:erro que inicia em 1 para forçar a validação do erro de consistência.
+        # Um get na chave teste:erro retornará TRY_OTHER_SERVER_OR_LATER até que um put neste valor seja realizado
+        if key == 'teste:erro' and my_timestamp == 0:
+            my_timestamp = 1
+        cmd = Message('GET').set_key(key).set_client_timestamp(my_timestamp)
         return cmd
     # endregion
     
     # region command handlers
-    # handler responsavel por tratar confirmações de um PUT
+    # handler responsavel por tratar confirmações de PUT
     def put_ok_command_handler(self, put_ok_cmd: Message) -> None:
         key, value, timestamp, server_address = put_ok_cmd.key, put_ok_cmd.value, put_ok_cmd.server_timestamp, put_ok_cmd.sender_address
+        self.set_timestamp(key, timestamp)
         print(f'PUT_OK key: {key} value {value} timestamp {timestamp} realizada no servidor {server_address}')
         
 
@@ -92,16 +114,20 @@ class Client:
         if response_type == 'GET_OK':
             key, value, client_timestamp = get_response_cmd.key, get_response_cmd.value, get_response_cmd.client_timestamp
             server_timestamp, server_address = get_response_cmd.server_timestamp, get_response_cmd.sender_address
+            self.set_timestamp(key, server_timestamp)
             print(f'GET key: {key} value: {value} obtido do servidor {server_address}, meu timestamp {client_timestamp} e do servidor {server_timestamp}')
+        elif response_type == 'TRY_OTHER_SERVER_OR_LATER':
+            print(f'Erro ao resgatar o valor correspondente a chave "{get_response_cmd.key}".\n Erro: TRY_OTHER_SERVER_OR_LATER')
 
     # endregion
     
+    # Sobe a thread que executa a cli de forma contínua
     def run_iteractive_menu(self) -> None:
         handler_thread = self.IteractiveMenuThread(self)
         handler_thread.start()
 
 
-    # classe aninhada para executar o menu iterativo
+    # classe aninhada para executar a cli
     class IteractiveMenuThread(Thread):
         def __init__(self, client) -> None:
             Thread.__init__(self)
